@@ -2,22 +2,46 @@
 
 Aile gelir ve giderlerini takip etmek için geliştirilmiş modern bir web uygulaması.
 
-## Özellikler
+## 🌟 Özellikler
 
+### Güvenlik
+- 🔒 **Kullanıcı Girişi**: Email/Password ile güvenli giriş
+- 🔐 **Veri Güvenliği**: Her kullanıcı sadece kendi verilerini görür
+- 🛡️ **Row Level Security**: Supabase RLS ile korumalı veriler
+
+### Bütçe Yönetimi
 - 📊 **Dönem Bazlı Raporlama**: Aylık gelir/gider takibi ve karşılaştırma
 - 👥 **Kullanıcı Yönetimi**: Aile üyelerini ekleyin, düzenleyin ve takip edin
 - 📁 **Kategori Yönetimi**: Gelir ve gider kategorilerini özelleştirin
+- ✏️ **İşlem Yönetimi**: İşlemleri ekleyin, düzenleyin, silin
+
+### Raporlama
 - 📈 **Grafikler**: Pasta ve sütun grafikleri ile görsel raporlar
 - 🔍 **Filtreleme**: Kullanıcı ve dönem bazlı filtreleme
-- ✏️ **İşlem Yönetimi**: İşlemleri ekleyin, düzenleyin, silin
 - 📋 **Sıralama**: Tablo kolonlarına göre sıralama
-- 💾 **Yerel Depolama**: Veriler tarayıcıda güvenle saklanır
+- 📊 **Aylık Karşılaştırma**: Son 4 ayın gelir/gider karşılaştırması
 
-## Kurulum
+### Teknik
+- 💾 **Bulut Veritabanı**: Supabase PostgreSQL ile veri saklama
+- 🌐 **Cihazlar Arası Senkronizasyon**: Verilerinize her yerden erişin
+- 🚀 **Canlı Deployment**: Vercel ile otomatik deployment
+
+## 🚀 Kurulum
+
+### Gereksinimler
+- Node.js 16+
+- Supabase hesabı
+- Vercel hesabı (deployment için)
+
+### Yerel Kurulum
 
 ```bash
 # Bağımlılıkları yükleyin
 npm install
+
+# .env dosyası oluşturun
+VITE_SUPABASE_URL=your_supabase_url
+VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
 
 # Geliştirme sunucusunu başlatın
 npm run dev
@@ -26,15 +50,55 @@ npm run dev
 npm run build
 ```
 
-## Teknolojiler
+### Supabase Kurulumu
 
+1. [Supabase](https://supabase.com) hesabı oluşturun
+2. Yeni proje oluşturun
+3. SQL Editor'da tabloları oluşturun (docs/supabase-setup.sql)
+4. API anahtarlarını `.env` dosyasına ekleyin
+
+## 🛠️ Teknolojiler
+
+### Frontend
 - React 18
 - Vite
 - TailwindCSS
-- Recharts
-- date-fns
-- Lucide React Icons
+- Recharts (Grafikler)
+- date-fns (Tarih işlemleri)
+- Lucide React (İkonlar)
 
-## Lisans
+### Backend
+- Supabase (PostgreSQL)
+- Supabase Auth (Authentication)
+- Row Level Security (RLS)
+
+### Deployment
+- Vercel (Hosting)
+- GitHub (Version Control)
+
+## 📖 Kullanım
+
+1. Uygulamayı açın ve kayıt olun
+2. Aile üyelerini ekleyin (Ayarlar → Kullanıcı Yönetimi)
+3. Gelir ve gider kategorileri oluşturun (Ayarlar → Kategori Yönetimi)
+4. Dashboard'dan işlem ekleyin
+5. Grafikler ve raporlarla bütçenizi takip edin
+
+## 🔒 Güvenlik
+
+- Şifreler hash'lenerek saklanır
+- Her kullanıcı sadece kendi verilerini görebilir
+- Supabase Row Level Security ile korumalı
+- HTTPS ile güvenli bağlantı
+
+## 📝 Lisans
 
 MIT
+
+## 🤝 Katkıda Bulunma
+
+Pull request'ler kabul edilir. Büyük değişiklikler için önce issue açarak tartışalım.
+
+## 📧 İletişim
+
+Sorularınız için issue açabilirsiniz.
