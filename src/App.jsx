@@ -1,105 +1,117 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Wallet, TrendingUp, TrendingDown, Users as UsersIcon, Settings, Trash2, Edit2, ChevronLeft, ChevronRight, PieChart as PieChartIcon } from 'lucide-react';
+import { Plus, Wallet, TrendingUp, TrendingDown, Users as UsersIcon, Settings, Trash2, Edit2, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { format, addMonths, subMonths, startOfMonth, endOfMonth, isWithinInterval, parseISO } from 'date-fns';
 import { tr } from 'date-fns/locale';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-
-// Initial Data
-const INITIAL_USERS = [
-    { id: '1', name: 'Engin', phone: '555-0000', avatar: 'https://ui-avatars.com/api/?name=Engin&background=0D8ABC&color=fff' },
-    { id: '2', name: 'Eylül', phone: '555-1111', avatar: 'https://ui-avatars.com/api/?name=Eylul&background=random' },
-];
-
-const INITIAL_CATEGORIES = {
-    income: [
-        { id: 'inc-1', name: 'Maaş' },
-        { id: 'inc-2', name: 'Kira Geliri' },
-        { id: 'inc-3', name: 'Ek İş' },
-    ],
-    expense: [
-        { id: 'exp-1', name: 'Market' },
-        { id: 'exp-2', name: 'Fatura' },
-        { id: 'exp-3', name: 'Kira' },
-        { id: 'exp-4', name: 'Ulaşım' },
-        { id: 'exp-5', name: 'Eğlence' },
-    ]
-};
+import { supabase } from './supabaseClient';
 
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d', '#ffc658', '#ff7300'];
 
 function App() {
     // --- STATE ---
-    const [users, setUsers] = useState(() => {
-        const saved = localStorage.getItem('users');
-        return saved ? JSON.parse(saved) : INITIAL_USERS;
-    });
-
-    const [categories, setCategories] = useState(() => {
-        const saved = localStorage.getItem('categories');
-        return saved ? JSON.parse(saved) : INITIAL_CATEGORIES;
-    });
-
-    const [transactions, setTransactions] = useState(() => {
-        const saved = localStorage.getItem('transactions');
-        return saved ? JSON.parse(saved) : [];
-    });
+    const [users, setUsers] = useState([]);
+    const [categories, setCategories] = useState({ income: [], expense: [] });
+    const [transactions, setTransactions] = useState([]);
+    const [loading, setLoading] = useState(true);
 
     // UI State
-    const [activeTab, setActiveTab] = useState('dashboard'); // dashboard, settings
+    const [activeTab, setActiveTab] = useState('dashboard');
     const [editingTransaction, setEditingTransaction] = useState(null);
     const [currentDate, setCurrentDate] = useState(new Date());
-    const [dashboardUserFilter, setDashboardUserFilter] = useState([]); // Empty array means ALL users
+    const [dashboardUserFilter, setDashboardUserFilter] = useState([]);
     const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
 
     // Form State
     const [amount, setAmount] = useState('');
     const [description, setDescription] = useState('');
     const [type, setType] = useState('expense');
-    const [selectedUser, setSelectedUser] = useState(users[0]?.id || '');
+    const [selectedUser, setSelectedUser] = useState('');
     const [selectedCategory, setSelectedCategory] = useState('');
     const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
 
     // Settings Form State
     const [editingUser, setEditingUser] = useState(null);
     const [userForm, setUserForm] = useState({ name: '', phone: '' });
-
     const [editingCategory, setEditingCategory] = useState(null);
     const [categoryForm, setCategoryForm] = useState({ name: '', type: 'expense' });
 
-    // --- EFFECTS ---
-    useEffect(() => { localStorage.setItem('users', JSON.stringify(users)); }, [users]);
-    useEffect(() => { localStorage.setItem('categories', JSON.stringify(categories)); }, [categories]);
-    useEffect(() => { localStorage.setItem('transactions', JSON.stringify(transactions)); }, [transactions]);
+    // --- SUPABASE FETCH FUNCTIONS ---
+    const fetchUsers = async () => {
+        const { data, error } = await supabase.from('users').select('*').order('created_at');
+        if (error) console.error('Error fetching users:', error);
+        else setUsers(data || []);
+    };
+
+    const fetchCategories = async () => {
+        const { data, error } = await supabase.from('categories').select('*').order('created_at');
+        if (error) console.error('Error fetching categories:', error);
+        else {
+            const income = data?.filter(c => c.type === 'income') || [];
+            const expense = data?.filter(c => c.type === 'expense') || [];
+            setCategories({ income, expense });
+        }
+    };
+
+    const fetchTransactions = async () => {
+        const { data, error } = await supabase.from('transactions').select('*').order('created_at', { ascending: false });
+        if (error) console.error('Error fetching transactions:', error);
+        else setTransactions(data || []);
+    };
+
+    // Initial data load
+    useEffect(() => {
+        const loadData = async () => {
+            setLoading(true);
+            await Promise.all([fetchUsers(), fetchCategories(), fetchTransactions()]);
+            setLoading(false);
+        };
+        loadData();
+    }, []);
+
+    // Set default selected user when users load
+    useEffect(() => {
+        if (users.length > 0 && !selectedUser) {
+            setSelectedUser(users[0].id);
+        }
+    }, [users]);
 
     // --- HANDLERS: Transactions ---
-    const handleAddTransaction = (e) => {
+    const handleAddTransaction = async (e) => {
         e.preventDefault();
         if (!amount || !description || !selectedUser || !selectedCategory) return;
 
         if (editingTransaction) {
-            const updatedTransaction = {
-                ...editingTransaction,
-                userId: selectedUser,
-                type,
-                amount: parseFloat(amount),
-                description,
-                category: selectedCategory,
-                date,
-            };
-            setTransactions(transactions.map(t => t.id === editingTransaction.id ? updatedTransaction : t));
-            setEditingTransaction(null);
+            const { error } = await supabase
+                .from('transactions')
+                .update({
+                    user_id: selectedUser,
+                    type,
+                    amount: parseFloat(amount),
+                    description,
+                    category: selectedCategory,
+                    date,
+                })
+                .eq('id', editingTransaction.id);
+
+            if (error) console.error('Error updating transaction:', error);
+            else {
+                await fetchTransactions();
+                setEditingTransaction(null);
+            }
         } else {
-            const newTransaction = {
-                id: Date.now().toString(),
-                userId: selectedUser,
+            const { error } = await supabase.from('transactions').insert([{
+                user_id: selectedUser,
                 type,
                 amount: parseFloat(amount),
                 description,
                 category: selectedCategory,
                 date,
-            };
-            setTransactions([newTransaction, ...transactions]);
+            }]);
+
+            if (error) console.error('Error adding transaction:', error);
+            else await fetchTransactions();
         }
+
         setAmount('');
         setDescription('');
     };
@@ -109,7 +121,7 @@ function App() {
         setAmount(t.amount);
         setDescription(t.description);
         setType(t.type);
-        setSelectedUser(t.userId);
+        setSelectedUser(t.user_id);
         setSelectedCategory(t.category);
         setDate(t.date);
         window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -122,28 +134,43 @@ function App() {
         setDate(new Date().toISOString().split('T')[0]);
     };
 
-    const handleDeleteTransaction = (id) => {
+    const handleDeleteTransaction = async (id) => {
         if (confirm('Bu işlemi silmek istediğinize emin misiniz?')) {
-            setTransactions(transactions.filter(t => t.id !== id));
+            const { error } = await supabase.from('transactions').delete().eq('id', id);
+            if (error) console.error('Error deleting transaction:', error);
+            else await fetchTransactions();
         }
     };
 
     // --- HANDLERS: Users ---
-    const handleSaveUser = (e) => {
+    const handleSaveUser = async (e) => {
         e.preventDefault();
         if (!userForm.name) return;
 
+        const avatar = `https://ui-avatars.com/api/?name=${userForm.name}&background=random`;
+
         if (editingUser) {
-            setUsers(users.map(u => u.id === editingUser.id ? { ...u, ...userForm, avatar: `https://ui-avatars.com/api/?name=${userForm.name}&background=random` } : u));
-            setEditingUser(null);
+            const { error } = await supabase
+                .from('users')
+                .update({ name: userForm.name, phone: userForm.phone, avatar })
+                .eq('id', editingUser.id);
+
+            if (error) console.error('Error updating user:', error);
+            else {
+                await fetchUsers();
+                setEditingUser(null);
+            }
         } else {
-            const user = {
-                id: Date.now().toString(),
-                ...userForm,
-                avatar: `https://ui-avatars.com/api/?name=${userForm.name}&background=random`
-            };
-            setUsers([...users, user]);
+            const { error } = await supabase.from('users').insert([{
+                name: userForm.name,
+                phone: userForm.phone,
+                avatar
+            }]);
+
+            if (error) console.error('Error adding user:', error);
+            else await fetchUsers();
         }
+
         setUserForm({ name: '', phone: '' });
     };
 
@@ -152,39 +179,40 @@ function App() {
         setUserForm({ name: user.name, phone: user.phone });
     };
 
-    const handleDeleteUser = (id) => {
+    const handleDeleteUser = async (id) => {
         if (confirm('Bu kullanıcıyı silmek istediğinize emin misiniz?')) {
-            setUsers(users.filter(u => u.id !== id));
+            const { error } = await supabase.from('users').delete().eq('id', id);
+            if (error) console.error('Error deleting user:', error);
+            else await fetchUsers();
         }
     };
 
     // --- HANDLERS: Categories ---
-    const handleSaveCategory = (e) => {
+    const handleSaveCategory = async (e) => {
         e.preventDefault();
         if (!categoryForm.name) return;
 
         if (editingCategory) {
-            // If type changed, remove from old list and add to new, otherwise just update
-            if (editingCategory.type !== categoryForm.type) {
-                setCategories(prev => ({
-                    ...prev,
-                    [editingCategory.type]: prev[editingCategory.type].filter(c => c.id !== editingCategory.id),
-                    [categoryForm.type]: [...prev[categoryForm.type], { id: editingCategory.id, name: categoryForm.name }]
-                }));
-            } else {
-                setCategories(prev => ({
-                    ...prev,
-                    [categoryForm.type]: prev[categoryForm.type].map(c => c.id === editingCategory.id ? { ...c, name: categoryForm.name } : c)
-                }));
+            const { error } = await supabase
+                .from('categories')
+                .update({ name: categoryForm.name, type: categoryForm.type })
+                .eq('id', editingCategory.id);
+
+            if (error) console.error('Error updating category:', error);
+            else {
+                await fetchCategories();
+                setEditingCategory(null);
             }
-            setEditingCategory(null);
         } else {
-            const category = { id: Date.now().toString(), name: categoryForm.name };
-            setCategories(prev => ({
-                ...prev,
-                [categoryForm.type]: [...prev[categoryForm.type], category]
-            }));
+            const { error } = await supabase.from('categories').insert([{
+                name: categoryForm.name,
+                type: categoryForm.type
+            }]);
+
+            if (error) console.error('Error adding category:', error);
+            else await fetchCategories();
         }
+
         setCategoryForm(prev => ({ ...prev, name: '' }));
     };
 
@@ -193,12 +221,11 @@ function App() {
         setCategoryForm({ name: cat.name, type });
     };
 
-    const handleDeleteCategory = (catType, id) => {
+    const handleDeleteCategory = async (catType, id) => {
         if (confirm('Bu kategoriyi silmek istediğinize emin misiniz?')) {
-            setCategories(prev => ({
-                ...prev,
-                [catType]: prev[catType].filter(c => c.id !== id)
-            }));
+            const { error } = await supabase.from('categories').delete().eq('id', id);
+            if (error) console.error('Error deleting category:', error);
+            else await fetchCategories();
         }
     };
 
@@ -208,7 +235,7 @@ function App() {
 
     const filteredTransactions = transactions.filter(t =>
         isWithinInterval(parseISO(t.date), { start: monthStart, end: monthEnd }) &&
-        (dashboardUserFilter.length === 0 || dashboardUserFilter.includes(t.userId))
+        (dashboardUserFilter.length === 0 || dashboardUserFilter.includes(t.user_id))
     );
 
     const sortedTransactions = [...filteredTransactions].sort((a, b) => {
@@ -218,12 +245,11 @@ function App() {
         if (sortConfig.key === 'date') {
             return sortConfig.direction === 'asc' ? new Date(a.date) - new Date(b.date) : new Date(b.date) - new Date(a.date);
         }
-        if (sortConfig.key === 'userId') {
-            const nameA = users.find(u => u.id === a.userId)?.name || '';
-            const nameB = users.find(u => u.id === b.userId)?.name || '';
+        if (sortConfig.key === 'user_id') {
+            const nameA = users.find(u => u.id === a.user_id)?.name || '';
+            const nameB = users.find(u => u.id === b.user_id)?.name || '';
             return sortConfig.direction === 'asc' ? nameA.localeCompare(nameB) : nameB.localeCompare(nameA);
         }
-        // String comparison for other fields
         const valA = a[sortConfig.key] ? a[sortConfig.key].toString().toLowerCase() : '';
         const valB = b[sortConfig.key] ? b[sortConfig.key].toString().toLowerCase() : '';
         return sortConfig.direction === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
@@ -234,13 +260,13 @@ function App() {
     const balance = totalIncome - totalExpense;
 
     const userStats = users.map(user => {
-        const userTrans = filteredTransactions.filter(t => t.userId === user.id);
+        const userTrans = filteredTransactions.filter(t => t.user_id === user.id);
         const income = userTrans.filter(t => t.type === 'income').reduce((acc, c) => acc + c.amount, 0);
         const expense = userTrans.filter(t => t.type === 'expense').reduce((acc, c) => acc + c.amount, 0);
         return { ...user, income, expense, balance: income - expense };
     });
 
-    // Chart Data: Monthly Comparison (Last 4 Months)
+    // Chart Data: Monthly Comparison
     const monthlyComparisonData = [];
     for (let i = 3; i >= 0; i--) {
         const targetDate = subMonths(currentDate, i);
@@ -249,7 +275,7 @@ function App() {
 
         const monthTrans = transactions.filter(t =>
             isWithinInterval(parseISO(t.date), { start, end }) &&
-            (dashboardUserFilter.length === 0 || dashboardUserFilter.includes(t.userId))
+            (dashboardUserFilter.length === 0 || dashboardUserFilter.includes(t.user_id))
         );
 
         const income = monthTrans.filter(t => t.type === 'income').reduce((acc, c) => acc + c.amount, 0);
@@ -275,6 +301,17 @@ function App() {
 
     const incomeCategoryData = getCategoryData('income');
     const expenseCategoryData = getCategoryData('expense');
+
+    if (loading) {
+        return (
+            <div className="min-h-screen bg-gray-100 flex items-center justify-center">
+                <div className="text-center">
+                    <Loader2 className="w-12 h-12 animate-spin text-blue-600 mx-auto mb-4" />
+                    <p className="text-gray-600">Veriler yükleniyor...</p>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="min-h-screen bg-gray-100 p-4 md:p-8 font-sans text-gray-800">
@@ -332,7 +369,7 @@ function App() {
                                     onClick={() => {
                                         if (dashboardUserFilter.includes(user.id)) {
                                             const newFilter = dashboardUserFilter.filter(id => id !== user.id);
-                                            setDashboardUserFilter(newFilter); // If empty, it naturally becomes "All"
+                                            setDashboardUserFilter(newFilter);
                                         } else {
                                             setDashboardUserFilter([...dashboardUserFilter, user.id]);
                                         }
@@ -516,8 +553,8 @@ function App() {
                                         <table className="w-full text-left">
                                             <thead>
                                                 <tr className="border-b border-gray-100 text-gray-500 text-sm">
-                                                    <th className="pb-3 font-medium cursor-pointer hover:text-gray-700" onClick={() => setSortConfig({ key: 'userId', direction: sortConfig.key === 'userId' && sortConfig.direction === 'asc' ? 'desc' : 'asc' })}>
-                                                        Kişi {sortConfig.key === 'userId' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                                                    <th className="pb-3 font-medium cursor-pointer hover:text-gray-700" onClick={() => setSortConfig({ key: 'user_id', direction: sortConfig.key === 'user_id' && sortConfig.direction === 'asc' ? 'desc' : 'asc' })}>
+                                                        Kişi {sortConfig.key === 'user_id' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
                                                     </th>
                                                     <th className="pb-3 font-medium cursor-pointer hover:text-gray-700" onClick={() => setSortConfig({ key: 'category', direction: sortConfig.key === 'category' && sortConfig.direction === 'asc' ? 'desc' : 'asc' })}>
                                                         Kategori {sortConfig.key === 'category' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
@@ -539,7 +576,7 @@ function App() {
                                                     <tr><td colSpan="6" className="py-8 text-center text-gray-400">Bu dönemde işlem yok</td></tr>
                                                 ) : (
                                                     sortedTransactions.map(t => {
-                                                        const user = users.find(u => u.id === t.userId);
+                                                        const user = users.find(u => u.id === t.user_id);
                                                         return (
                                                             <tr key={t.id} className="border-b border-gray-50 last:border-0 hover:bg-gray-50 transition-colors group">
                                                                 <td className="py-3 flex items-center gap-2">
