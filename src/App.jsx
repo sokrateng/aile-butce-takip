@@ -1,13 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Wallet, TrendingUp, TrendingDown, Users as UsersIcon, Settings, Trash2, Edit2, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
+import { Plus, Wallet, TrendingUp, TrendingDown, Users as UsersIcon, Settings, Trash2, Edit2, ChevronLeft, ChevronRight, Loader2, LogOut } from 'lucide-react';
 import { format, addMonths, subMonths, startOfMonth, endOfMonth, isWithinInterval, parseISO } from 'date-fns';
 import { tr } from 'date-fns/locale';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { supabase } from './supabaseClient';
+import Login from './Login';
 
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d', '#ffc658', '#ff7300'];
 
 function App() {
+    // --- AUTH STATE ---
+    const [session, setSession] = useState(null);
+    const [authLoading, setAuthLoading] = useState(true);
+
     // --- STATE ---
     const [users, setUsers] = useState([]);
     const [categories, setCategories] = useState({ income: [], expense: [] });
@@ -58,15 +63,42 @@ function App() {
         else setTransactions(data || []);
     };
 
+    // --- AUTH CHECK ---
+    useEffect(() => {
+        // Check current session
+        supabase.auth.getSession().then(({ data: { session } }) => {
+            setSession(session);
+            setAuthLoading(false);
+        });
+
+        // Listen for auth changes
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+            setSession(session);
+        });
+
+        return () => subscription.unsubscribe();
+    }, []);
+
     // Initial data load
     useEffect(() => {
-        const loadData = async () => {
-            setLoading(true);
-            await Promise.all([fetchUsers(), fetchCategories(), fetchTransactions()]);
-            setLoading(false);
-        };
-        loadData();
-    }, []);
+        if (session) {
+            const loadData = async () => {
+                setLoading(true);
+                await Promise.all([fetchUsers(), fetchCategories(), fetchTransactions()]);
+                setLoading(false);
+            };
+            loadData();
+        }
+    }, [session]);
+
+    // Logout handler
+    const handleLogout = async () => {
+        await supabase.auth.signOut();
+        setSession(null);
+        setUsers([]);
+        setCategories({ income: [], expense: [] });
+        setTransactions([]);
+    };
 
     // Set default selected user when users load
     useEffect(() => {
@@ -106,6 +138,7 @@ function App() {
                 description,
                 category: selectedCategory,
                 date,
+                auth_user_id: session.user.id
             }]);
 
             if (error) console.error('Error adding transaction:', error);
@@ -164,7 +197,8 @@ function App() {
             const { error } = await supabase.from('users').insert([{
                 name: userForm.name,
                 phone: userForm.phone,
-                avatar
+                avatar,
+                auth_user_id: session.user.id
             }]);
 
             if (error) console.error('Error adding user:', error);
@@ -206,7 +240,8 @@ function App() {
         } else {
             const { error } = await supabase.from('categories').insert([{
                 name: categoryForm.name,
-                type: categoryForm.type
+                type: categoryForm.type,
+                auth_user_id: session.user.id
             }]);
 
             if (error) console.error('Error adding category:', error);
@@ -302,6 +337,24 @@ function App() {
     const incomeCategoryData = getCategoryData('income');
     const expenseCategoryData = getCategoryData('expense');
 
+    // Auth loading
+    if (authLoading) {
+        return (
+            <div className="min-h-screen bg-gray-100 flex items-center justify-center">
+                <div className="text-center">
+                    <Loader2 className="w-12 h-12 animate-spin text-blue-600 mx-auto mb-4" />
+                    <p className="text-gray-600">Yükleniyor...</p>
+                </div>
+            </div>
+        );
+    }
+
+    // Not logged in
+    if (!session) {
+        return <Login onLogin={(user) => setSession({ user })} />;
+    }
+
+    // Data loading
     if (loading) {
         return (
             <div className="min-h-screen bg-gray-100 flex items-center justify-center">
@@ -343,6 +396,13 @@ function App() {
                             className={`p-2 rounded-lg transition-colors ${activeTab === 'settings' ? 'bg-blue-100 text-blue-600' : 'text-gray-500 hover:bg-gray-100'}`}
                         >
                             <Settings size={24} />
+                        </button>
+                        <button
+                            onClick={handleLogout}
+                            className="p-2 rounded-lg text-gray-500 hover:bg-red-100 hover:text-red-600 transition-colors"
+                            title="Çıkış Yap"
+                        >
+                            <LogOut size={24} />
                         </button>
                         <div className="text-right hidden sm:block">
                             <p className="text-sm text-gray-500">Toplam Bakiye</p>
