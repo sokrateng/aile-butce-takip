@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Wallet, TrendingUp, TrendingDown, Users as UsersIcon, Settings, Trash2, Edit2, ChevronLeft, ChevronRight, Loader2, LogOut } from 'lucide-react';
+import { Plus, Wallet, TrendingUp, TrendingDown, Users as UsersIcon, Settings, Trash2, Edit2, ChevronLeft, ChevronRight, Loader2, LogOut, FolderOpen, ChevronRight as ChevronRightIcon, Shield } from 'lucide-react';
 import { format, addMonths, subMonths, startOfMonth, endOfMonth, isWithinInterval, parseISO } from 'date-fns';
 import { tr } from 'date-fns/locale';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
@@ -7,6 +7,7 @@ import { supabase } from './supabaseClient';
 import Login from './Login';
 
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d', '#ffc658', '#ff7300'];
+const BUDGET_COLORS = ['#6366F1', '#8B5CF6', '#EC4899', '#F59E0B', '#14B8A6', '#F97316', '#06B6D4', '#84CC16'];
 
 function App() {
     // --- AUTH STATE ---
@@ -17,6 +18,8 @@ function App() {
     const [users, setUsers] = useState([]);
     const [categories, setCategories] = useState({ income: [], expense: [] });
     const [transactions, setTransactions] = useState([]);
+    const [budgetTypes, setBudgetTypes] = useState([]);
+    const [budgetTypeUsers, setBudgetTypeUsers] = useState([]);
     const [loading, setLoading] = useState(true);
 
     // UI State
@@ -25,6 +28,7 @@ function App() {
     const [currentDate, setCurrentDate] = useState(new Date());
     const [dashboardUserFilter, setDashboardUserFilter] = useState([]);
     const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
+    const [drilldownBudgetType, setDrilldownBudgetType] = useState(null); // null = genel özet, id = detay
 
     // Form State
     const [amount, setAmount] = useState('');
@@ -32,17 +36,21 @@ function App() {
     const [type, setType] = useState('expense');
     const [selectedUser, setSelectedUser] = useState('');
     const [selectedCategory, setSelectedCategory] = useState('');
+    const [selectedBudgetType, setSelectedBudgetType] = useState('');
     const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
     const [isEstimated, setIsEstimated] = useState(false);
 
     // Filter State
-    const [statusFilter, setStatusFilter] = useState('all'); // 'all' | 'actual' | 'estimated'
+    const [statusFilter, setStatusFilter] = useState('all');
 
     // Settings Form State
     const [editingUser, setEditingUser] = useState(null);
     const [userForm, setUserForm] = useState({ name: '', phone: '' });
     const [editingCategory, setEditingCategory] = useState(null);
     const [categoryForm, setCategoryForm] = useState({ name: '', type: 'expense' });
+    const [editingBudgetType, setEditingBudgetType] = useState(null);
+    const [budgetTypeForm, setBudgetTypeForm] = useState({ name: '' });
+    const [managingAccessBudgetType, setManagingAccessBudgetType] = useState(null);
 
     // --- SUPABASE FETCH FUNCTIONS ---
     const fetchUsers = async () => {
@@ -67,15 +75,25 @@ function App() {
         else setTransactions(data || []);
     };
 
+    const fetchBudgetTypes = async () => {
+        const { data, error } = await supabase.from('budget_types').select('*').order('created_at');
+        if (error) console.error('Error fetching budget types:', error);
+        else setBudgetTypes(data || []);
+    };
+
+    const fetchBudgetTypeUsers = async () => {
+        const { data, error } = await supabase.from('budget_type_users').select('*');
+        if (error) console.error('Error fetching budget type users:', error);
+        else setBudgetTypeUsers(data || []);
+    };
+
     // --- AUTH CHECK ---
     useEffect(() => {
-        // Check current session
         supabase.auth.getSession().then(({ data: { session } }) => {
             setSession(session);
             setAuthLoading(false);
         });
 
-        // Listen for auth changes
         const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
             setSession(session);
         });
@@ -88,7 +106,7 @@ function App() {
         if (session) {
             const loadData = async () => {
                 setLoading(true);
-                await Promise.all([fetchUsers(), fetchCategories(), fetchTransactions()]);
+                await Promise.all([fetchUsers(), fetchCategories(), fetchTransactions(), fetchBudgetTypes(), fetchBudgetTypeUsers()]);
                 setLoading(false);
             };
             loadData();
@@ -102,6 +120,8 @@ function App() {
         setUsers([]);
         setCategories({ income: [], expense: [] });
         setTransactions([]);
+        setBudgetTypes([]);
+        setBudgetTypeUsers([]);
     };
 
     // Set default selected user when users load
@@ -111,10 +131,34 @@ function App() {
         }
     }, [users]);
 
+    // --- HELPERS ---
+    const getGenelBudgetType = () => budgetTypes.find(bt => bt.name === 'Genel');
+    const getGenelId = () => getGenelBudgetType()?.id || null;
+
+    const getBudgetTypeName = (budgetTypeId) => {
+        if (!budgetTypeId) return 'Genel';
+        const bt = budgetTypes.find(b => b.id === budgetTypeId);
+        return bt ? bt.name : 'Genel';
+    };
+
+    // Kullanıcının erişebildiği bütçe türleri
+    const getAccessibleBudgetTypes = () => {
+        const genelId = getGenelId();
+        return budgetTypes.filter(bt => {
+            if (bt.id === genelId) return true; // Genel herkese açık
+            // Erişim kaydı var mı veya hiç erişim tanımlanmamışsa herkese açık
+            const accessRecords = budgetTypeUsers.filter(btu => btu.budget_type_id === bt.id);
+            if (accessRecords.length === 0) return true;
+            return accessRecords.some(btu => btu.user_id === selectedUser);
+        });
+    };
+
     // --- HANDLERS: Transactions ---
     const handleAddTransaction = async (e) => {
         e.preventDefault();
         if (!amount || !description || !selectedUser || !selectedCategory) return;
+
+        const budgetTypeId = selectedBudgetType || getGenelId() || null;
 
         if (editingTransaction) {
             const { error } = await supabase
@@ -127,6 +171,7 @@ function App() {
                     category: selectedCategory,
                     date,
                     is_estimated: isEstimated,
+                    budget_type_id: budgetTypeId,
                 })
                 .eq('id', editingTransaction.id);
 
@@ -144,6 +189,7 @@ function App() {
                 category: selectedCategory,
                 date,
                 is_estimated: isEstimated,
+                budget_type_id: budgetTypeId,
                 auth_user_id: session.user.id
             }]);
 
@@ -165,6 +211,7 @@ function App() {
         setSelectedCategory(t.category);
         setDate(t.date);
         setIsEstimated(t.is_estimated || false);
+        setSelectedBudgetType(t.budget_type_id || getGenelId() || '');
         window.scrollTo({ top: 0, behavior: 'smooth' });
     };
 
@@ -174,6 +221,7 @@ function App() {
         setDescription('');
         setDate(new Date().toISOString().split('T')[0]);
         setIsEstimated(false);
+        setSelectedBudgetType(getGenelId() || '');
     };
 
     const handleDeleteTransaction = async (id) => {
@@ -273,11 +321,85 @@ function App() {
         }
     };
 
+    // --- HANDLERS: Budget Types ---
+    const handleSaveBudgetType = async (e) => {
+        e.preventDefault();
+        if (!budgetTypeForm.name) return;
+
+        if (editingBudgetType) {
+            const { error } = await supabase
+                .from('budget_types')
+                .update({ name: budgetTypeForm.name })
+                .eq('id', editingBudgetType.id);
+
+            if (error) console.error('Error updating budget type:', error);
+            else {
+                await fetchBudgetTypes();
+                setEditingBudgetType(null);
+            }
+        } else {
+            const { error } = await supabase.from('budget_types').insert([{
+                name: budgetTypeForm.name,
+                auth_user_id: session.user.id
+            }]);
+
+            if (error) console.error('Error adding budget type:', error);
+            else await fetchBudgetTypes();
+        }
+
+        setBudgetTypeForm({ name: '' });
+    };
+
+    const handleDeleteBudgetType = async (id) => {
+        const bt = budgetTypes.find(b => b.id === id);
+        if (bt?.name === 'Genel') return; // Genel silinemez
+        if (confirm('Bu bütçe türünü silmek istediğinize emin misiniz? İlişkili işlemler "Genel" bütçeye taşınacaktır.')) {
+            // İlişkili işlemleri Genel'e taşı
+            const genelId = getGenelId();
+            await supabase.from('transactions').update({ budget_type_id: genelId }).eq('budget_type_id', id);
+            const { error } = await supabase.from('budget_types').delete().eq('id', id);
+            if (error) console.error('Error deleting budget type:', error);
+            else {
+                await Promise.all([fetchBudgetTypes(), fetchTransactions()]);
+            }
+        }
+    };
+
+    const handleToggleBudgetTypeAccess = async (budgetTypeId, userId) => {
+        const existing = budgetTypeUsers.find(btu => btu.budget_type_id === budgetTypeId && btu.user_id === userId);
+        if (existing) {
+            await supabase.from('budget_type_users').delete().eq('id', existing.id);
+        } else {
+            await supabase.from('budget_type_users').insert([{
+                budget_type_id: budgetTypeId,
+                user_id: userId,
+                auth_user_id: session.user.id
+            }]);
+        }
+        await fetchBudgetTypeUsers();
+    };
+
     // --- CALCULATIONS & FILTERING ---
     const monthStart = startOfMonth(currentDate);
     const monthEnd = endOfMonth(currentDate);
 
-    const filteredTransactions = transactions.filter(t =>
+    // Bütçe türüne göre filtreleme
+    const getTransactionsForBudgetType = (btId) => {
+        const genelId = getGenelId();
+        if (btId === null) {
+            // Genel özet: tüm işlemler
+            return transactions;
+        }
+        if (btId === genelId) {
+            // "Genel" bütçe türü: budget_type_id null veya genel olanlar
+            return transactions.filter(t => !t.budget_type_id || t.budget_type_id === genelId);
+        }
+        return transactions.filter(t => t.budget_type_id === btId);
+    };
+
+    const activeTransactions = getTransactionsForBudgetType(drilldownBudgetType);
+
+    const filteredTransactions = activeTransactions.filter(t =>
         isWithinInterval(parseISO(t.date), { start: monthStart, end: monthEnd }) &&
         (dashboardUserFilter.length === 0 || dashboardUserFilter.includes(t.user_id)) &&
         (statusFilter === 'all' || (statusFilter === 'estimated' ? t.is_estimated : !t.is_estimated))
@@ -301,7 +423,7 @@ function App() {
     });
 
     // Tüm dönem işlemleri (statusFilter'dan bağımsız, özet kartlar için)
-    const allMonthTransactions = transactions.filter(t =>
+    const allMonthTransactions = activeTransactions.filter(t =>
         isWithinInterval(parseISO(t.date), { start: monthStart, end: monthEnd }) &&
         (dashboardUserFilter.length === 0 || dashboardUserFilter.includes(t.user_id))
     );
@@ -325,6 +447,27 @@ function App() {
         return { ...user, income, expense, balance: income - expense, estIncome, estExpense, hasEstimated: estIncome > 0 || estExpense > 0 };
     });
 
+    // Bütçe türleri özet verileri (genel özet sayfası için)
+    const budgetTypeSummaries = budgetTypes.map((bt, index) => {
+        const genelId = getGenelId();
+        const btTransactions = bt.id === genelId
+            ? transactions.filter(t => !t.budget_type_id || t.budget_type_id === genelId)
+            : transactions.filter(t => t.budget_type_id === bt.id);
+
+        const monthTrans = btTransactions.filter(t =>
+            isWithinInterval(parseISO(t.date), { start: monthStart, end: monthEnd }) &&
+            (dashboardUserFilter.length === 0 || dashboardUserFilter.includes(t.user_id))
+        );
+
+        const income = monthTrans.filter(t => t.type === 'income' && !t.is_estimated).reduce((acc, c) => acc + c.amount, 0);
+        const expense = monthTrans.filter(t => t.type === 'expense' && !t.is_estimated).reduce((acc, c) => acc + c.amount, 0);
+        const estIncome = monthTrans.filter(t => t.type === 'income' && t.is_estimated).reduce((acc, c) => acc + c.amount, 0);
+        const estExpense = monthTrans.filter(t => t.type === 'expense' && t.is_estimated).reduce((acc, c) => acc + c.amount, 0);
+        const transCount = monthTrans.length;
+
+        return { ...bt, income, expense, balance: income - expense, estIncome, estExpense, transCount, color: BUDGET_COLORS[index % BUDGET_COLORS.length] };
+    });
+
     // Chart Data: Monthly Comparison
     const monthlyComparisonData = [];
     for (let i = 3; i >= 0; i--) {
@@ -332,7 +475,7 @@ function App() {
         const start = startOfMonth(targetDate);
         const end = endOfMonth(targetDate);
 
-        const monthTrans = transactions.filter(t =>
+        const monthTrans = activeTransactions.filter(t =>
             isWithinInterval(parseISO(t.date), { start, end }) &&
             (dashboardUserFilter.length === 0 || dashboardUserFilter.includes(t.user_id))
         );
@@ -365,6 +508,17 @@ function App() {
     const incomeCategoryData = getCategoryData('income');
     const expenseCategoryData = getCategoryData('expense');
 
+    // Bütçe türü bazlı bar chart (genel özet için)
+    const budgetTypeChartData = budgetTypeSummaries.filter(bt => bt.transCount > 0).map(bt => ({
+        name: bt.name,
+        gelir: bt.income,
+        gider: bt.expense,
+    }));
+
+    // TL formatter
+    const fmtTRY = (v) => v.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' });
+    const fmtShort = (v) => v.toLocaleString('tr-TR', { maximumFractionDigits: 0 });
+
     // Auth loading
     if (authLoading) {
         return (
@@ -394,6 +548,583 @@ function App() {
         );
     }
 
+    // --- RENDER: Dashboard Detail (drill-down into a budget type) ---
+    const renderDashboardDetail = () => (
+        <>
+            {/* Breadcrumb */}
+            <div className="flex items-center gap-2 text-sm text-gray-500 mb-4">
+                <button onClick={() => setDrilldownBudgetType(null)} className="hover:text-blue-600 font-medium">Genel Bütçe</button>
+                <ChevronRightIcon size={14} />
+                <span className="text-gray-900 font-medium">{getBudgetTypeName(drilldownBudgetType)}</span>
+            </div>
+
+            {/* User Filter */}
+            <div className="flex items-center gap-2 mb-6 overflow-x-auto pb-2 no-scrollbar">
+                <button
+                    onClick={() => setDashboardUserFilter([])}
+                    className={`px-4 py-2 rounded-full text-sm font-medium transition-all whitespace-nowrap ${dashboardUserFilter.length === 0 ? 'bg-blue-600 text-white shadow-md' : 'bg-white text-gray-600 hover:bg-gray-50 shadow-sm'}`}
+                >
+                    Tümü
+                </button>
+                {users.map(user => (
+                    <button
+                        key={user.id}
+                        onClick={() => {
+                            if (dashboardUserFilter.includes(user.id)) {
+                                setDashboardUserFilter(dashboardUserFilter.filter(id => id !== user.id));
+                            } else {
+                                setDashboardUserFilter([...dashboardUserFilter, user.id]);
+                            }
+                        }}
+                        className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all whitespace-nowrap ${dashboardUserFilter.includes(user.id) ? 'bg-blue-600 text-white shadow-md' : 'bg-white text-gray-600 hover:bg-gray-50 shadow-sm'}`}
+                    >
+                        <img src={user.avatar} className="w-5 h-5 rounded-full" alt="" />
+                        {user.name}
+                    </button>
+                ))}
+            </div>
+
+            {/* Stats Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="bg-white p-6 rounded-2xl shadow-sm flex items-center gap-4">
+                    <div className="bg-green-100 p-3 rounded-full text-green-600"><TrendingUp size={24} /></div>
+                    <div>
+                        <p className="text-sm text-gray-500">Dönem Geliri</p>
+                        <p className="text-2xl font-bold text-green-600">{fmtTRY(actualIncome)}</p>
+                        {estimatedIncome > 0 && <p className="text-xs text-gray-400 mt-1 italic">+{fmtTRY(estimatedIncome)} tahmini</p>}
+                    </div>
+                </div>
+                <div className="bg-white p-6 rounded-2xl shadow-sm flex items-center gap-4">
+                    <div className="bg-red-100 p-3 rounded-full text-red-600"><TrendingDown size={24} /></div>
+                    <div>
+                        <p className="text-sm text-gray-500">Dönem Gideri</p>
+                        <p className="text-2xl font-bold text-red-600">{fmtTRY(actualExpense)}</p>
+                        {estimatedExpense > 0 && <p className="text-xs text-gray-400 mt-1 italic">+{fmtTRY(estimatedExpense)} tahmini</p>}
+                    </div>
+                </div>
+                <div className="bg-white p-6 rounded-2xl shadow-sm flex items-center gap-4">
+                    <div className="bg-blue-100 p-3 rounded-full text-blue-600"><Wallet size={24} /></div>
+                    <div>
+                        <p className="text-sm text-gray-500">Kesin Bakiye</p>
+                        <p className={`text-2xl font-bold ${actualBalance >= 0 ? 'text-green-600' : 'text-red-600'}`}>{fmtTRY(actualBalance)}</p>
+                        {(estimatedIncome > 0 || estimatedExpense > 0) && <p className="text-xs text-gray-400 mt-1 italic">Tahmini dahil: {fmtTRY(balance)}</p>}
+                    </div>
+                </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Left Column */}
+                <div className="space-y-6 lg:col-span-1">
+                    {/* Add Transaction Form */}
+                    <div className="bg-white p-6 rounded-2xl shadow-sm">
+                        <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
+                            {editingTransaction ? <Edit2 size={20} /> : <Plus size={20} />}
+                            {editingTransaction ? 'İşlem Düzenle' : 'İşlem Ekle'}
+                        </h2>
+                        <form onSubmit={handleAddTransaction} className="space-y-4">
+                            <div className="flex bg-gray-100 p-1 rounded-lg">
+                                <button type="button" onClick={() => setType('income')} className={`flex-1 py-2 rounded-md text-sm font-medium transition-colors ${type === 'income' ? 'bg-green-500 text-white shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>Gelir</button>
+                                <button type="button" onClick={() => setType('expense')} className={`flex-1 py-2 rounded-md text-sm font-medium transition-colors ${type === 'expense' ? 'bg-red-500 text-white shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>Gider</button>
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Bütçe Türü</label>
+                                <select value={selectedBudgetType} onChange={(e) => setSelectedBudgetType(e.target.value)} className="w-full p-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
+                                    {budgetTypes.map(bt => <option key={bt.id} value={bt.id}>{bt.name}</option>)}
+                                </select>
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Kişi</label>
+                                <select value={selectedUser} onChange={(e) => setSelectedUser(e.target.value)} className="w-full p-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
+                                    {users.map(user => <option key={user.id} value={user.id}>{user.name}</option>)}
+                                </select>
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Kategori</label>
+                                <select value={selectedCategory} onChange={(e) => setSelectedCategory(e.target.value)} className="w-full p-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required>
+                                    <option value="">Seçiniz</option>
+                                    {categories[type].map(cat => <option key={cat.id} value={cat.name}>{cat.name}</option>)}
+                                </select>
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Tutar (TL)</label>
+                                <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" className="w-full p-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required />
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Açıklama</label>
+                                <input type="text" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Açıklama giriniz" className="w-full p-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required />
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Tarih</label>
+                                <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full p-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required />
+                            </div>
+
+                            <label className="flex items-center gap-2 cursor-pointer select-none">
+                                <input type="checkbox" checked={isEstimated} onChange={(e) => setIsEstimated(e.target.checked)} className="w-4 h-4 text-amber-500 border-gray-300 rounded focus:ring-amber-500" />
+                                <span className="text-sm text-gray-600">Tahmini kalem</span>
+                                {isEstimated && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">Kesinleşmemiş</span>}
+                            </label>
+
+                            <div className="flex gap-2">
+                                {editingTransaction && (
+                                    <button type="button" onClick={handleCancelEdit} className="px-4 py-2 bg-gray-200 rounded-lg hover:bg-gray-300 transition-colors">İptal</button>
+                                )}
+                                <button type="submit" className="flex-1 bg-blue-600 text-white py-2 rounded-lg font-medium hover:bg-blue-700 transition-colors">
+                                    {editingTransaction ? 'Güncelle' : 'Ekle'}
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+
+                    {/* User Summaries */}
+                    <div className="bg-white p-6 rounded-2xl shadow-sm">
+                        <h2 className="text-lg font-bold mb-4">Kişi Bazlı Durum (Bu Ay)</h2>
+                        <div className="space-y-4">
+                            {userStats.map(user => (
+                                <div key={user.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
+                                    <div className="flex items-center gap-3">
+                                        <img src={user.avatar} alt={user.name} className="w-10 h-10 rounded-full" />
+                                        <div>
+                                            <p className="font-medium text-gray-900">{user.name}</p>
+                                            <p className="text-xs text-gray-500">
+                                                <span className="text-green-600">+{fmtShort(user.income)}</span> | <span className="text-red-600">-{fmtShort(user.expense)}</span>
+                                            </p>
+                                            {user.hasEstimated && (
+                                                <p className="text-xs text-amber-500 italic">
+                                                    ~{user.estIncome > 0 ? `+${fmtShort(user.estIncome)}` : ''}{user.estIncome > 0 && user.estExpense > 0 ? ' | ' : ''}{user.estExpense > 0 ? `-${fmtShort(user.estExpense)}` : ''} tahmini
+                                                </p>
+                                            )}
+                                        </div>
+                                    </div>
+                                    <div className={`font-bold ${user.balance >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                        {fmtTRY(user.balance)}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+
+                {/* Right Column */}
+                <div className="space-y-6 lg:col-span-2">
+                    {/* Charts Grid */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {/* Income Pie */}
+                        <div className="bg-white p-6 rounded-2xl shadow-sm">
+                            <h2 className="text-sm font-bold mb-4 text-gray-500 uppercase tracking-wider">Gelir Dağılımı</h2>
+                            <div className="h-48 w-full">
+                                {incomeCategoryData.length > 0 ? (
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <PieChart>
+                                            <Pie data={incomeCategoryData} cx="50%" cy="50%" innerRadius={30} outerRadius={60} paddingAngle={5} dataKey="value">
+                                                {incomeCategoryData.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
+                                            </Pie>
+                                            <Tooltip formatter={(value) => fmtTRY(value)} />
+                                            <Legend wrapperStyle={{ fontSize: '12px' }} />
+                                        </PieChart>
+                                    </ResponsiveContainer>
+                                ) : <div className="h-full flex items-center justify-center text-gray-400 text-sm">Veri yok</div>}
+                            </div>
+                        </div>
+
+                        {/* Expense Pie */}
+                        <div className="bg-white p-6 rounded-2xl shadow-sm">
+                            <h2 className="text-sm font-bold mb-4 text-gray-500 uppercase tracking-wider">Gider Dağılımı</h2>
+                            <div className="h-48 w-full">
+                                {expenseCategoryData.length > 0 ? (
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <PieChart>
+                                            <Pie data={expenseCategoryData} cx="50%" cy="50%" innerRadius={30} outerRadius={60} paddingAngle={5} dataKey="value">
+                                                {expenseCategoryData.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
+                                            </Pie>
+                                            <Tooltip formatter={(value) => fmtTRY(value)} />
+                                            <Legend wrapperStyle={{ fontSize: '12px' }} />
+                                        </PieChart>
+                                    </ResponsiveContainer>
+                                ) : <div className="h-full flex items-center justify-center text-gray-400 text-sm">Veri yok</div>}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Bar Chart */}
+                    <div className="bg-white p-6 rounded-2xl shadow-sm">
+                        <h2 className="text-lg font-bold mb-4">Aylık Karşılaştırma (Son 4 Dönem)</h2>
+                        <div className="h-64 w-full">
+                            <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={monthlyComparisonData}>
+                                    <XAxis dataKey="name" />
+                                    <YAxis tickFormatter={(value) => value.toLocaleString('tr-TR')} />
+                                    <Tooltip formatter={(value) => fmtTRY(value)} />
+                                    <Legend />
+                                    <Bar dataKey="gelir" stackId="income" fill="#10B981" name="Gelir (Kesin)" radius={[0, 0, 0, 0]} />
+                                    <Bar dataKey="gelirTahmini" stackId="income" fill="#6EE7B7" name="Gelir (Tahmini)" radius={[4, 4, 0, 0]} />
+                                    <Bar dataKey="gider" stackId="expense" fill="#EF4444" name="Gider (Kesin)" radius={[0, 0, 0, 0]} />
+                                    <Bar dataKey="giderTahmini" stackId="expense" fill="#FCA5A5" name="Gider (Tahmini)" radius={[4, 4, 0, 0]} />
+                                </BarChart>
+                            </ResponsiveContainer>
+                        </div>
+                    </div>
+
+                    {/* Recent Transactions */}
+                    <div className="bg-white p-6 rounded-2xl shadow-sm">
+                        <div className="flex items-center justify-between mb-4">
+                            <h2 className="text-lg font-bold">Bu Ayın İşlemleri</h2>
+                            <div className="flex items-center bg-gray-100 rounded-lg p-1 text-sm">
+                                <button onClick={() => setStatusFilter('all')} className={`px-3 py-1 rounded-md transition-colors ${statusFilter === 'all' ? 'bg-white shadow-sm font-medium' : 'text-gray-500 hover:text-gray-700'}`}>Tümü</button>
+                                <button onClick={() => setStatusFilter('actual')} className={`px-3 py-1 rounded-md transition-colors ${statusFilter === 'actual' ? 'bg-white shadow-sm font-medium' : 'text-gray-500 hover:text-gray-700'}`}>Kesin</button>
+                                <button onClick={() => setStatusFilter('estimated')} className={`px-3 py-1 rounded-md transition-colors ${statusFilter === 'estimated' ? 'bg-amber-100 text-amber-700 shadow-sm font-medium' : 'text-gray-500 hover:text-gray-700'}`}>Tahmini</button>
+                            </div>
+                        </div>
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-left">
+                                <thead>
+                                    <tr className="border-b border-gray-100 text-gray-500 text-sm">
+                                        <th className="pb-3 font-medium cursor-pointer hover:text-gray-700" onClick={() => setSortConfig({ key: 'user_id', direction: sortConfig.key === 'user_id' && sortConfig.direction === 'asc' ? 'desc' : 'asc' })}>
+                                            Kişi {sortConfig.key === 'user_id' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                                        </th>
+                                        <th className="pb-3 font-medium cursor-pointer hover:text-gray-700" onClick={() => setSortConfig({ key: 'category', direction: sortConfig.key === 'category' && sortConfig.direction === 'asc' ? 'desc' : 'asc' })}>
+                                            Kategori {sortConfig.key === 'category' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                                        </th>
+                                        <th className="pb-3 font-medium cursor-pointer hover:text-gray-700" onClick={() => setSortConfig({ key: 'description', direction: sortConfig.key === 'description' && sortConfig.direction === 'asc' ? 'desc' : 'asc' })}>
+                                            Açıklama {sortConfig.key === 'description' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                                        </th>
+                                        <th className="pb-3 font-medium cursor-pointer hover:text-gray-700" onClick={() => setSortConfig({ key: 'date', direction: sortConfig.key === 'date' && sortConfig.direction === 'asc' ? 'desc' : 'asc' })}>
+                                            Tarih {sortConfig.key === 'date' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                                        </th>
+                                        <th className="pb-3 font-medium text-right cursor-pointer hover:text-gray-700" onClick={() => setSortConfig({ key: 'amount', direction: sortConfig.key === 'amount' && sortConfig.direction === 'asc' ? 'desc' : 'asc' })}>
+                                            Tutar {sortConfig.key === 'amount' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                                        </th>
+                                        <th className="pb-3 font-medium w-20"></th>
+                                    </tr>
+                                </thead>
+                                <tbody className="text-sm">
+                                    {sortedTransactions.length === 0 ? (
+                                        <tr><td colSpan="6" className="py-8 text-center text-gray-400">Bu dönemde işlem yok</td></tr>
+                                    ) : (
+                                        sortedTransactions.map(t => {
+                                            const user = users.find(u => u.id === t.user_id);
+                                            return (
+                                                <tr key={t.id} className={`border-b border-gray-50 last:border-0 hover:bg-gray-50 transition-colors group ${t.is_estimated ? 'opacity-60 italic' : ''}`}>
+                                                    <td className="py-3 flex items-center gap-2">
+                                                        <img src={user?.avatar} className="w-6 h-6 rounded-full" alt="" />
+                                                        <span className="text-gray-900">{user?.name}</span>
+                                                    </td>
+                                                    <td className="py-3 text-gray-600">
+                                                        <span className="bg-gray-100 px-2 py-1 rounded text-xs">{t.category}</span>
+                                                        {t.is_estimated && <span className="ml-1 bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded text-xs not-italic">tahmini</span>}
+                                                    </td>
+                                                    <td className="py-3 text-gray-600">{t.description}</td>
+                                                    <td className="py-3 text-gray-500">{format(parseISO(t.date), 'd MMM', { locale: tr })}</td>
+                                                    <td className={`py-3 text-right font-medium ${t.type === 'income' ? 'text-green-600' : 'text-red-600'}`}>
+                                                        {t.type === 'income' ? '+' : '-'}{fmtTRY(t.amount)}
+                                                    </td>
+                                                    <td className="py-3 text-right">
+                                                        <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                            <button onClick={() => handleEditTransactionClick(t)} className="p-1 text-blue-500 hover:bg-blue-100 rounded"><Edit2 size={16} /></button>
+                                                            <button onClick={() => handleDeleteTransaction(t.id)} className="p-1 text-red-500 hover:bg-red-100 rounded"><Trash2 size={16} /></button>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </>
+    );
+
+    // --- RENDER: Dashboard Overview (genel bütçe özeti + bütçe türü kartları) ---
+    const renderDashboardOverview = () => (
+        <>
+            {/* User Filter */}
+            <div className="flex items-center gap-2 mb-6 overflow-x-auto pb-2 no-scrollbar">
+                <button
+                    onClick={() => setDashboardUserFilter([])}
+                    className={`px-4 py-2 rounded-full text-sm font-medium transition-all whitespace-nowrap ${dashboardUserFilter.length === 0 ? 'bg-blue-600 text-white shadow-md' : 'bg-white text-gray-600 hover:bg-gray-50 shadow-sm'}`}
+                >
+                    Tümü
+                </button>
+                {users.map(user => (
+                    <button
+                        key={user.id}
+                        onClick={() => {
+                            if (dashboardUserFilter.includes(user.id)) {
+                                setDashboardUserFilter(dashboardUserFilter.filter(id => id !== user.id));
+                            } else {
+                                setDashboardUserFilter([...dashboardUserFilter, user.id]);
+                            }
+                        }}
+                        className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all whitespace-nowrap ${dashboardUserFilter.includes(user.id) ? 'bg-blue-600 text-white shadow-md' : 'bg-white text-gray-600 hover:bg-gray-50 shadow-sm'}`}
+                    >
+                        <img src={user.avatar} className="w-5 h-5 rounded-full" alt="" />
+                        {user.name}
+                    </button>
+                ))}
+            </div>
+
+            {/* Genel Toplam Stats */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="bg-white p-6 rounded-2xl shadow-sm flex items-center gap-4">
+                    <div className="bg-green-100 p-3 rounded-full text-green-600"><TrendingUp size={24} /></div>
+                    <div>
+                        <p className="text-sm text-gray-500">Toplam Gelir</p>
+                        <p className="text-2xl font-bold text-green-600">{fmtTRY(actualIncome)}</p>
+                        {estimatedIncome > 0 && <p className="text-xs text-gray-400 mt-1 italic">+{fmtTRY(estimatedIncome)} tahmini</p>}
+                    </div>
+                </div>
+                <div className="bg-white p-6 rounded-2xl shadow-sm flex items-center gap-4">
+                    <div className="bg-red-100 p-3 rounded-full text-red-600"><TrendingDown size={24} /></div>
+                    <div>
+                        <p className="text-sm text-gray-500">Toplam Gider</p>
+                        <p className="text-2xl font-bold text-red-600">{fmtTRY(actualExpense)}</p>
+                        {estimatedExpense > 0 && <p className="text-xs text-gray-400 mt-1 italic">+{fmtTRY(estimatedExpense)} tahmini</p>}
+                    </div>
+                </div>
+                <div className="bg-white p-6 rounded-2xl shadow-sm flex items-center gap-4">
+                    <div className="bg-blue-100 p-3 rounded-full text-blue-600"><Wallet size={24} /></div>
+                    <div>
+                        <p className="text-sm text-gray-500">Kesin Bakiye</p>
+                        <p className={`text-2xl font-bold ${actualBalance >= 0 ? 'text-green-600' : 'text-red-600'}`}>{fmtTRY(actualBalance)}</p>
+                        {(estimatedIncome > 0 || estimatedExpense > 0) && <p className="text-xs text-gray-400 mt-1 italic">Tahmini dahil: {fmtTRY(balance)}</p>}
+                    </div>
+                </div>
+            </div>
+
+            {/* Bütçe Türleri Kartları */}
+            <div>
+                <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><FolderOpen size={20} /> Bütçe Türleri</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {budgetTypeSummaries.map(bt => (
+                        <button
+                            key={bt.id}
+                            onClick={() => {
+                                setDrilldownBudgetType(bt.id);
+                                setSelectedBudgetType(bt.id);
+                            }}
+                            className="bg-white p-5 rounded-2xl shadow-sm hover:shadow-md transition-all text-left group border-l-4"
+                            style={{ borderLeftColor: bt.color }}
+                        >
+                            <div className="flex items-center justify-between mb-3">
+                                <h3 className="font-bold text-gray-900">{bt.name}</h3>
+                                <ChevronRightIcon size={16} className="text-gray-400 group-hover:text-blue-600 transition-colors" />
+                            </div>
+                            <div className="space-y-1">
+                                <div className="flex justify-between text-sm">
+                                    <span className="text-gray-500">Gelir</span>
+                                    <span className="text-green-600 font-medium">+{fmtShort(bt.income)}</span>
+                                </div>
+                                <div className="flex justify-between text-sm">
+                                    <span className="text-gray-500">Gider</span>
+                                    <span className="text-red-600 font-medium">-{fmtShort(bt.expense)}</span>
+                                </div>
+                                <div className="border-t pt-1 mt-1 flex justify-between text-sm font-bold">
+                                    <span className="text-gray-500">Bakiye</span>
+                                    <span className={bt.balance >= 0 ? 'text-green-600' : 'text-red-600'}>{fmtTRY(bt.balance)}</span>
+                                </div>
+                                {(bt.estIncome > 0 || bt.estExpense > 0) && (
+                                    <p className="text-xs text-amber-500 italic mt-1">Tahmini kalemler mevcut</p>
+                                )}
+                            </div>
+                            <p className="text-xs text-gray-400 mt-2">{bt.transCount} işlem</p>
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            {/* Bütçe Türleri Karşılaştırma Grafiği */}
+            {budgetTypeChartData.length > 1 && (
+                <div className="bg-white p-6 rounded-2xl shadow-sm">
+                    <h2 className="text-lg font-bold mb-4">Bütçe Türleri Karşılaştırması</h2>
+                    <div className="h-64 w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={budgetTypeChartData}>
+                                <XAxis dataKey="name" />
+                                <YAxis tickFormatter={(value) => value.toLocaleString('tr-TR')} />
+                                <Tooltip formatter={(value) => fmtTRY(value)} />
+                                <Legend />
+                                <Bar dataKey="gelir" fill="#10B981" name="Gelir" radius={[4, 4, 0, 0]} />
+                                <Bar dataKey="gider" fill="#EF4444" name="Gider" radius={[4, 4, 0, 0]} />
+                            </BarChart>
+                        </ResponsiveContainer>
+                    </div>
+                </div>
+            )}
+        </>
+    );
+
+    // --- RENDER: Settings ---
+    const renderSettings = () => (
+        <div className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* User Management */}
+                <div className="bg-white p-6 rounded-2xl shadow-sm">
+                    <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><UsersIcon size={20} /> Kullanıcı Yönetimi</h2>
+                    <form onSubmit={handleSaveUser} className="mb-6 space-y-3 bg-gray-50 p-4 rounded-xl">
+                        <div className="grid grid-cols-2 gap-3">
+                            <input type="text" placeholder="İsim" value={userForm.name} onChange={e => setUserForm({ ...userForm, name: e.target.value })} className="p-2 border rounded-lg" required />
+                            <input type="text" placeholder="Telefon" value={userForm.phone} onChange={e => setUserForm({ ...userForm, phone: e.target.value })} className="p-2 border rounded-lg" />
+                        </div>
+                        <div className="flex gap-2">
+                            {editingUser && <button type="button" onClick={() => { setEditingUser(null); setUserForm({ name: '', phone: '' }); }} className="px-4 py-2 bg-gray-200 rounded-lg hover:bg-gray-300">İptal</button>}
+                            <button type="submit" className="flex-1 bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700">{editingUser ? 'Güncelle' : 'Kullanıcı Ekle'}</button>
+                        </div>
+                    </form>
+                    <div className="space-y-2">
+                        {users.map(user => (
+                            <div key={user.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl group">
+                                <div className="flex items-center gap-3">
+                                    <img src={user.avatar} className="w-8 h-8 rounded-full" alt="" />
+                                    <div>
+                                        <p className="font-medium">{user.name}</p>
+                                        <p className="text-xs text-gray-500">{user.phone || 'Tel yok'}</p>
+                                    </div>
+                                </div>
+                                <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <button onClick={() => handleEditUserClick(user)} className="p-1 text-blue-500 hover:bg-blue-100 rounded"><Edit2 size={16} /></button>
+                                    <button onClick={() => handleDeleteUser(user.id)} className="p-1 text-red-500 hover:bg-red-100 rounded"><Trash2 size={16} /></button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Category Management */}
+                <div className="bg-white p-6 rounded-2xl shadow-sm">
+                    <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><Settings size={20} /> Kategori Yönetimi</h2>
+                    <form onSubmit={handleSaveCategory} className="mb-6 space-y-3 bg-gray-50 p-4 rounded-xl">
+                        <div className="flex gap-2">
+                            <select value={categoryForm.type} onChange={e => setCategoryForm({ ...categoryForm, type: e.target.value })} className="p-2 border rounded-lg">
+                                <option value="income">Gelir</option>
+                                <option value="expense">Gider</option>
+                            </select>
+                            <input type="text" placeholder="Kategori Adı" value={categoryForm.name} onChange={e => setCategoryForm({ ...categoryForm, name: e.target.value })} className="flex-1 p-2 border rounded-lg" required />
+                        </div>
+                        <div className="flex gap-2">
+                            {editingCategory && <button type="button" onClick={() => { setEditingCategory(null); setCategoryForm({ name: '', type: 'expense' }); }} className="px-4 py-2 bg-gray-200 rounded-lg hover:bg-gray-300">İptal</button>}
+                            <button type="submit" className="flex-1 bg-green-600 text-white py-2 rounded-lg hover:bg-green-700">{editingCategory ? 'Güncelle' : 'Kategori Ekle'}</button>
+                        </div>
+                    </form>
+
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <h3 className="font-medium text-green-600 mb-2">Gelir Kategorileri</h3>
+                            <div className="space-y-2">
+                                {categories.income.map(cat => (
+                                    <div key={cat.id} className="flex justify-between items-center p-2 bg-green-50 rounded-lg text-sm group">
+                                        <span>{cat.name}</span>
+                                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                            <button onClick={() => handleEditCategoryClick(cat, 'income')} className="text-blue-400 hover:text-blue-600"><Edit2 size={14} /></button>
+                                            <button onClick={() => handleDeleteCategory('income', cat.id)} className="text-red-400 hover:text-red-600"><Trash2 size={14} /></button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                        <div>
+                            <h3 className="font-medium text-red-600 mb-2">Gider Kategorileri</h3>
+                            <div className="space-y-2">
+                                {categories.expense.map(cat => (
+                                    <div key={cat.id} className="flex justify-between items-center p-2 bg-red-50 rounded-lg text-sm group">
+                                        <span>{cat.name}</span>
+                                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                            <button onClick={() => handleEditCategoryClick(cat, 'expense')} className="text-blue-400 hover:text-blue-600"><Edit2 size={14} /></button>
+                                            <button onClick={() => handleDeleteCategory('expense', cat.id)} className="text-red-400 hover:text-red-600"><Trash2 size={14} /></button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* Budget Type Management */}
+            <div className="bg-white p-6 rounded-2xl shadow-sm">
+                <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><FolderOpen size={20} /> Bütçe Türü Yönetimi</h2>
+                <form onSubmit={handleSaveBudgetType} className="mb-6 space-y-3 bg-gray-50 p-4 rounded-xl">
+                    <div className="flex gap-2">
+                        <input type="text" placeholder="Bütçe Türü Adı (ör: Araç Tamiri)" value={budgetTypeForm.name} onChange={e => setBudgetTypeForm({ name: e.target.value })} className="flex-1 p-2 border rounded-lg" required />
+                        <div className="flex gap-2">
+                            {editingBudgetType && <button type="button" onClick={() => { setEditingBudgetType(null); setBudgetTypeForm({ name: '' }); }} className="px-4 py-2 bg-gray-200 rounded-lg hover:bg-gray-300">İptal</button>}
+                            <button type="submit" className="px-6 bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700">{editingBudgetType ? 'Güncelle' : 'Ekle'}</button>
+                        </div>
+                    </div>
+                </form>
+
+                <div className="space-y-3">
+                    {budgetTypes.map(bt => {
+                        const isGenel = bt.name === 'Genel';
+                        const accessUsers = budgetTypeUsers.filter(btu => btu.budget_type_id === bt.id);
+                        const isManaging = managingAccessBudgetType === bt.id;
+
+                        return (
+                            <div key={bt.id} className="border rounded-xl overflow-hidden">
+                                <div className="flex items-center justify-between p-4 bg-gray-50 group">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-3 h-3 rounded-full" style={{ backgroundColor: BUDGET_COLORS[budgetTypes.indexOf(bt) % BUDGET_COLORS.length] }}></div>
+                                        <div>
+                                            <p className="font-medium">{bt.name}</p>
+                                            <p className="text-xs text-gray-500">
+                                                {isGenel ? 'Tüm kullanıcılar erişebilir' : (
+                                                    accessUsers.length === 0
+                                                        ? 'Tüm kullanıcılar erişebilir'
+                                                        : `${accessUsers.length} kullanıcı erişebilir`
+                                                )}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <div className="flex gap-2">
+                                        {!isGenel && (
+                                            <>
+                                                <button onClick={() => setManagingAccessBudgetType(isManaging ? null : bt.id)} className={`p-1.5 rounded transition-colors ${isManaging ? 'bg-indigo-100 text-indigo-600' : 'text-gray-400 hover:text-indigo-600 hover:bg-indigo-50'}`} title="Erişim Yönetimi">
+                                                    <Shield size={16} />
+                                                </button>
+                                                <button onClick={() => { setEditingBudgetType(bt); setBudgetTypeForm({ name: bt.name }); }} className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"><Edit2 size={16} /></button>
+                                                <button onClick={() => handleDeleteBudgetType(bt.id)} className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"><Trash2 size={16} /></button>
+                                            </>
+                                        )}
+                                    </div>
+                                </div>
+
+                                {/* Erişim yönetimi paneli */}
+                                {isManaging && !isGenel && (
+                                    <div className="p-4 bg-indigo-50 border-t">
+                                        <p className="text-sm font-medium text-indigo-700 mb-3">Erişim Yönetimi</p>
+                                        <p className="text-xs text-gray-500 mb-3">Hiçbir kullanıcı seçilmezse herkes erişebilir.</p>
+                                        <div className="flex flex-wrap gap-2">
+                                            {users.map(user => {
+                                                const hasAccess = accessUsers.some(a => a.user_id === user.id);
+                                                return (
+                                                    <button
+                                                        key={user.id}
+                                                        onClick={() => handleToggleBudgetTypeAccess(bt.id, user.id)}
+                                                        className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm transition-all ${hasAccess ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 border hover:border-indigo-300'}`}
+                                                    >
+                                                        <img src={user.avatar} className="w-5 h-5 rounded-full" alt="" />
+                                                        {user.name}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+        </div>
+    );
+
     return (
         <div className="min-h-screen bg-gray-100 p-4 md:p-8 font-sans text-gray-800">
             <div className="max-w-7xl mx-auto space-y-6">
@@ -420,7 +1151,7 @@ function App() {
 
                     <div className="flex items-center gap-4 w-full md:w-auto justify-end">
                         <button
-                            onClick={() => setActiveTab(activeTab === 'dashboard' ? 'settings' : 'dashboard')}
+                            onClick={() => { setActiveTab(activeTab === 'dashboard' ? 'settings' : 'dashboard'); }}
                             className={`p-2 rounded-lg transition-colors ${activeTab === 'settings' ? 'bg-blue-100 text-blue-600' : 'text-gray-500 hover:bg-gray-100'}`}
                         >
                             <Settings size={24} />
@@ -435,384 +1166,19 @@ function App() {
                         <div className="text-right hidden sm:block">
                             <p className="text-sm text-gray-500">Kesin Bakiye</p>
                             <p className={`text-2xl font-bold ${actualBalance >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                {actualBalance.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}
+                                {fmtTRY(actualBalance)}
                             </p>
                             {(estimatedIncome > 0 || estimatedExpense > 0) && (
-                                <p className="text-xs text-gray-400 italic">Tahmini dahil: {balance.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}</p>
+                                <p className="text-xs text-gray-400 italic">Tahmini dahil: {fmtTRY(balance)}</p>
                             )}
                         </div>
                     </div>
                 </header>
 
                 {activeTab === 'dashboard' ? (
-                    <>
-                        {/* User Filter */}
-                        <div className="flex items-center gap-2 mb-6 overflow-x-auto pb-2 no-scrollbar">
-                            <button
-                                onClick={() => setDashboardUserFilter([])}
-                                className={`px-4 py-2 rounded-full text-sm font-medium transition-all whitespace-nowrap ${dashboardUserFilter.length === 0 ? 'bg-blue-600 text-white shadow-md' : 'bg-white text-gray-600 hover:bg-gray-50 shadow-sm'}`}
-                            >
-                                Tümü
-                            </button>
-                            {users.map(user => (
-                                <button
-                                    key={user.id}
-                                    onClick={() => {
-                                        if (dashboardUserFilter.includes(user.id)) {
-                                            const newFilter = dashboardUserFilter.filter(id => id !== user.id);
-                                            setDashboardUserFilter(newFilter);
-                                        } else {
-                                            setDashboardUserFilter([...dashboardUserFilter, user.id]);
-                                        }
-                                    }}
-                                    className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all whitespace-nowrap ${dashboardUserFilter.includes(user.id) ? 'bg-blue-600 text-white shadow-md' : 'bg-white text-gray-600 hover:bg-gray-50 shadow-sm'}`}
-                                >
-                                    <img src={user.avatar} className="w-5 h-5 rounded-full" alt="" />
-                                    {user.name}
-                                </button>
-                            ))}
-                        </div>
-
-                        {/* Stats Cards */}
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                            <div className="bg-white p-6 rounded-2xl shadow-sm flex items-center gap-4">
-                                <div className="bg-green-100 p-3 rounded-full text-green-600"><TrendingUp size={24} /></div>
-                                <div>
-                                    <p className="text-sm text-gray-500">Dönem Geliri</p>
-                                    <p className="text-2xl font-bold text-green-600">{actualIncome.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}</p>
-                                    {estimatedIncome > 0 && (
-                                        <p className="text-xs text-gray-400 mt-1 italic">+{estimatedIncome.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })} tahmini</p>
-                                    )}
-                                </div>
-                            </div>
-                            <div className="bg-white p-6 rounded-2xl shadow-sm flex items-center gap-4">
-                                <div className="bg-red-100 p-3 rounded-full text-red-600"><TrendingDown size={24} /></div>
-                                <div>
-                                    <p className="text-sm text-gray-500">Dönem Gideri</p>
-                                    <p className="text-2xl font-bold text-red-600">{actualExpense.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}</p>
-                                    {estimatedExpense > 0 && (
-                                        <p className="text-xs text-gray-400 mt-1 italic">+{estimatedExpense.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })} tahmini</p>
-                                    )}
-                                </div>
-                            </div>
-                            <div className="bg-white p-6 rounded-2xl shadow-sm flex items-center gap-4">
-                                <div className="bg-blue-100 p-3 rounded-full text-blue-600"><Wallet size={24} /></div>
-                                <div>
-                                    <p className="text-sm text-gray-500">Kesin Bakiye</p>
-                                    <p className={`text-2xl font-bold ${actualBalance >= 0 ? 'text-green-600' : 'text-red-600'}`}>{actualBalance.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}</p>
-                                    {(estimatedIncome > 0 || estimatedExpense > 0) && (
-                                        <p className="text-xs text-gray-400 mt-1 italic">Tahmini dahil: {balance.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}</p>
-                                    )}
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                            {/* Left Column */}
-                            <div className="space-y-6 lg:col-span-1">
-                                {/* Add Transaction Form */}
-                                <div className="bg-white p-6 rounded-2xl shadow-sm">
-                                    <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
-                                        {editingTransaction ? <Edit2 size={20} /> : <Plus size={20} />}
-                                        {editingTransaction ? 'İşlem Düzenle' : 'İşlem Ekle'}
-                                    </h2>
-                                    <form onSubmit={handleAddTransaction} className="space-y-4">
-                                        <div className="flex bg-gray-100 p-1 rounded-lg">
-                                            <button type="button" onClick={() => setType('income')} className={`flex-1 py-2 rounded-md text-sm font-medium transition-colors ${type === 'income' ? 'bg-green-500 text-white shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>Gelir</button>
-                                            <button type="button" onClick={() => setType('expense')} className={`flex-1 py-2 rounded-md text-sm font-medium transition-colors ${type === 'expense' ? 'bg-red-500 text-white shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>Gider</button>
-                                        </div>
-
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Kişi</label>
-                                            <select value={selectedUser} onChange={(e) => setSelectedUser(e.target.value)} className="w-full p-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
-                                                {users.map(user => <option key={user.id} value={user.id}>{user.name}</option>)}
-                                            </select>
-                                        </div>
-
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Kategori</label>
-                                            <select value={selectedCategory} onChange={(e) => setSelectedCategory(e.target.value)} className="w-full p-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required>
-                                                <option value="">Seçiniz</option>
-                                                {categories[type].map(cat => <option key={cat.id} value={cat.name}>{cat.name}</option>)}
-                                            </select>
-                                        </div>
-
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Tutar (TL)</label>
-                                            <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" className="w-full p-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required />
-                                        </div>
-
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Açıklama</label>
-                                            <input type="text" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Açıklama giriniz" className="w-full p-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required />
-                                        </div>
-
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Tarih</label>
-                                            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full p-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required />
-                                        </div>
-
-                                        <label className="flex items-center gap-2 cursor-pointer select-none">
-                                            <input type="checkbox" checked={isEstimated} onChange={(e) => setIsEstimated(e.target.checked)} className="w-4 h-4 text-amber-500 border-gray-300 rounded focus:ring-amber-500" />
-                                            <span className="text-sm text-gray-600">Tahmini kalem</span>
-                                            {isEstimated && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">Kesinleşmemiş</span>}
-                                        </label>
-
-                                        <div className="flex gap-2">
-                                            {editingTransaction && (
-                                                <button type="button" onClick={handleCancelEdit} className="px-4 py-2 bg-gray-200 rounded-lg hover:bg-gray-300 transition-colors">İptal</button>
-                                            )}
-                                            <button type="submit" className="flex-1 bg-blue-600 text-white py-2 rounded-lg font-medium hover:bg-blue-700 transition-colors">
-                                                {editingTransaction ? 'Güncelle' : 'Ekle'}
-                                            </button>
-                                        </div>
-                                    </form>
-                                </div>
-
-                                {/* User Summaries */}
-                                <div className="bg-white p-6 rounded-2xl shadow-sm">
-                                    <h2 className="text-lg font-bold mb-4">Kişi Bazlı Durum (Bu Ay)</h2>
-                                    <div className="space-y-4">
-                                        {userStats.map(user => (
-                                            <div key={user.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
-                                                <div className="flex items-center gap-3">
-                                                    <img src={user.avatar} alt={user.name} className="w-10 h-10 rounded-full" />
-                                                    <div>
-                                                        <p className="font-medium text-gray-900">{user.name}</p>
-                                                        <p className="text-xs text-gray-500">
-                                                            <span className="text-green-600">+{user.income.toLocaleString('tr-TR', { maximumFractionDigits: 0 })}</span> | <span className="text-red-600">-{user.expense.toLocaleString('tr-TR', { maximumFractionDigits: 0 })}</span>
-                                                        </p>
-                                                        {user.hasEstimated && (
-                                                            <p className="text-xs text-amber-500 italic">
-                                                                ~{user.estIncome > 0 ? `+${user.estIncome.toLocaleString('tr-TR', { maximumFractionDigits: 0 })}` : ''}{user.estIncome > 0 && user.estExpense > 0 ? ' | ' : ''}{user.estExpense > 0 ? `-${user.estExpense.toLocaleString('tr-TR', { maximumFractionDigits: 0 })}` : ''} tahmini
-                                                            </p>
-                                                        )}
-                                                    </div>
-                                                </div>
-                                                <div className={`font-bold ${user.balance >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                                    {user.balance.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                            </div>
-
-                            {/* Right Column */}
-                            <div className="space-y-6 lg:col-span-2">
-
-                                {/* Charts Grid */}
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                    {/* Income Pie */}
-                                    <div className="bg-white p-6 rounded-2xl shadow-sm">
-                                        <h2 className="text-sm font-bold mb-4 text-gray-500 uppercase tracking-wider">Gelir Dağılımı</h2>
-                                        <div className="h-48 w-full">
-                                            {incomeCategoryData.length > 0 ? (
-                                                <ResponsiveContainer width="100%" height="100%">
-                                                    <PieChart>
-                                                        <Pie data={incomeCategoryData} cx="50%" cy="50%" innerRadius={30} outerRadius={60} paddingAngle={5} dataKey="value">
-                                                            {incomeCategoryData.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
-                                                        </Pie>
-                                                        <Tooltip formatter={(value) => value.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })} />
-                                                        <Legend wrapperStyle={{ fontSize: '12px' }} />
-                                                    </PieChart>
-                                                </ResponsiveContainer>
-                                            ) : <div className="h-full flex items-center justify-center text-gray-400 text-sm">Veri yok</div>}
-                                        </div>
-                                    </div>
-
-                                    {/* Expense Pie */}
-                                    <div className="bg-white p-6 rounded-2xl shadow-sm">
-                                        <h2 className="text-sm font-bold mb-4 text-gray-500 uppercase tracking-wider">Gider Dağılımı</h2>
-                                        <div className="h-48 w-full">
-                                            {expenseCategoryData.length > 0 ? (
-                                                <ResponsiveContainer width="100%" height="100%">
-                                                    <PieChart>
-                                                        <Pie data={expenseCategoryData} cx="50%" cy="50%" innerRadius={30} outerRadius={60} paddingAngle={5} dataKey="value">
-                                                            {expenseCategoryData.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
-                                                        </Pie>
-                                                        <Tooltip formatter={(value) => value.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })} />
-                                                        <Legend wrapperStyle={{ fontSize: '12px' }} />
-                                                    </PieChart>
-                                                </ResponsiveContainer>
-                                            ) : <div className="h-full flex items-center justify-center text-gray-400 text-sm">Veri yok</div>}
-                                        </div>
-                                    </div>
-                                </div>
-
-                                {/* Bar Chart */}
-                                <div className="bg-white p-6 rounded-2xl shadow-sm">
-                                    <h2 className="text-lg font-bold mb-4">Aylık Karşılaştırma (Son 4 Dönem)</h2>
-                                    <div className="h-64 w-full">
-                                        <ResponsiveContainer width="100%" height="100%">
-                                            <BarChart data={monthlyComparisonData}>
-                                                <XAxis dataKey="name" />
-                                                <YAxis tickFormatter={(value) => value.toLocaleString('tr-TR')} />
-                                                <Tooltip formatter={(value) => value.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })} />
-                                                <Legend />
-                                                <Bar dataKey="gelir" stackId="income" fill="#10B981" name="Gelir (Kesin)" radius={[0, 0, 0, 0]} />
-                                                <Bar dataKey="gelirTahmini" stackId="income" fill="#6EE7B7" name="Gelir (Tahmini)" radius={[4, 4, 0, 0]} />
-                                                <Bar dataKey="gider" stackId="expense" fill="#EF4444" name="Gider (Kesin)" radius={[0, 0, 0, 0]} />
-                                                <Bar dataKey="giderTahmini" stackId="expense" fill="#FCA5A5" name="Gider (Tahmini)" radius={[4, 4, 0, 0]} />
-                                            </BarChart>
-                                        </ResponsiveContainer>
-                                    </div>
-                                </div>
-
-                                {/* Recent Transactions */}
-                                <div className="bg-white p-6 rounded-2xl shadow-sm">
-                                    <div className="flex items-center justify-between mb-4">
-                                        <h2 className="text-lg font-bold">Bu Ayın İşlemleri</h2>
-                                        <div className="flex items-center bg-gray-100 rounded-lg p-1 text-sm">
-                                            <button onClick={() => setStatusFilter('all')} className={`px-3 py-1 rounded-md transition-colors ${statusFilter === 'all' ? 'bg-white shadow-sm font-medium' : 'text-gray-500 hover:text-gray-700'}`}>Tümü</button>
-                                            <button onClick={() => setStatusFilter('actual')} className={`px-3 py-1 rounded-md transition-colors ${statusFilter === 'actual' ? 'bg-white shadow-sm font-medium' : 'text-gray-500 hover:text-gray-700'}`}>Kesin</button>
-                                            <button onClick={() => setStatusFilter('estimated')} className={`px-3 py-1 rounded-md transition-colors ${statusFilter === 'estimated' ? 'bg-amber-100 text-amber-700 shadow-sm font-medium' : 'text-gray-500 hover:text-gray-700'}`}>Tahmini</button>
-                                        </div>
-                                    </div>
-                                    <div className="overflow-x-auto">
-                                        <table className="w-full text-left">
-                                            <thead>
-                                                <tr className="border-b border-gray-100 text-gray-500 text-sm">
-                                                    <th className="pb-3 font-medium cursor-pointer hover:text-gray-700" onClick={() => setSortConfig({ key: 'user_id', direction: sortConfig.key === 'user_id' && sortConfig.direction === 'asc' ? 'desc' : 'asc' })}>
-                                                        Kişi {sortConfig.key === 'user_id' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
-                                                    </th>
-                                                    <th className="pb-3 font-medium cursor-pointer hover:text-gray-700" onClick={() => setSortConfig({ key: 'category', direction: sortConfig.key === 'category' && sortConfig.direction === 'asc' ? 'desc' : 'asc' })}>
-                                                        Kategori {sortConfig.key === 'category' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
-                                                    </th>
-                                                    <th className="pb-3 font-medium cursor-pointer hover:text-gray-700" onClick={() => setSortConfig({ key: 'description', direction: sortConfig.key === 'description' && sortConfig.direction === 'asc' ? 'desc' : 'asc' })}>
-                                                        Açıklama {sortConfig.key === 'description' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
-                                                    </th>
-                                                    <th className="pb-3 font-medium cursor-pointer hover:text-gray-700" onClick={() => setSortConfig({ key: 'date', direction: sortConfig.key === 'date' && sortConfig.direction === 'asc' ? 'desc' : 'asc' })}>
-                                                        Tarih {sortConfig.key === 'date' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
-                                                    </th>
-                                                    <th className="pb-3 font-medium text-right cursor-pointer hover:text-gray-700" onClick={() => setSortConfig({ key: 'amount', direction: sortConfig.key === 'amount' && sortConfig.direction === 'asc' ? 'desc' : 'asc' })}>
-                                                        Tutar {sortConfig.key === 'amount' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
-                                                    </th>
-                                                    <th className="pb-3 font-medium w-20"></th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="text-sm">
-                                                {sortedTransactions.length === 0 ? (
-                                                    <tr><td colSpan="6" className="py-8 text-center text-gray-400">Bu dönemde işlem yok</td></tr>
-                                                ) : (
-                                                    sortedTransactions.map(t => {
-                                                        const user = users.find(u => u.id === t.user_id);
-                                                        return (
-                                                            <tr key={t.id} className={`border-b border-gray-50 last:border-0 hover:bg-gray-50 transition-colors group ${t.is_estimated ? 'opacity-60 italic' : ''}`}>
-                                                                <td className="py-3 flex items-center gap-2">
-                                                                    <img src={user?.avatar} className="w-6 h-6 rounded-full" alt="" />
-                                                                    <span className="text-gray-900">{user?.name}</span>
-                                                                </td>
-                                                                <td className="py-3 text-gray-600">
-                                                                    <span className="bg-gray-100 px-2 py-1 rounded text-xs">{t.category}</span>
-                                                                    {t.is_estimated && <span className="ml-1 bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded text-xs not-italic">tahmini</span>}
-                                                                </td>
-                                                                <td className="py-3 text-gray-600">{t.description}</td>
-                                                                <td className="py-3 text-gray-500">{format(parseISO(t.date), 'd MMM', { locale: tr })}</td>
-                                                                <td className={`py-3 text-right font-medium ${t.type === 'income' ? 'text-green-600' : 'text-red-600'}`}>
-                                                                    {t.type === 'income' ? '+' : '-'}{t.amount.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}
-                                                                </td>
-                                                                <td className="py-3 text-right">
-                                                                    <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                                        <button onClick={() => handleEditTransactionClick(t)} className="p-1 text-blue-500 hover:bg-blue-100 rounded"><Edit2 size={16} /></button>
-                                                                        <button onClick={() => handleDeleteTransaction(t.id)} className="p-1 text-red-500 hover:bg-red-100 rounded"><Trash2 size={16} /></button>
-                                                                    </div>
-                                                                </td>
-                                                            </tr>
-                                                        );
-                                                    })
-                                                )}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </>
+                    drilldownBudgetType !== null ? renderDashboardDetail() : renderDashboardOverview()
                 ) : (
-                    // SETTINGS TAB
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        {/* User Management */}
-                        <div className="bg-white p-6 rounded-2xl shadow-sm">
-                            <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><UsersIcon size={20} /> Kullanıcı Yönetimi</h2>
-                            <form onSubmit={handleSaveUser} className="mb-6 space-y-3 bg-gray-50 p-4 rounded-xl">
-                                <div className="grid grid-cols-2 gap-3">
-                                    <input type="text" placeholder="İsim" value={userForm.name} onChange={e => setUserForm({ ...userForm, name: e.target.value })} className="p-2 border rounded-lg" required />
-                                    <input type="text" placeholder="Telefon" value={userForm.phone} onChange={e => setUserForm({ ...userForm, phone: e.target.value })} className="p-2 border rounded-lg" />
-                                </div>
-                                <div className="flex gap-2">
-                                    {editingUser && <button type="button" onClick={() => { setEditingUser(null); setUserForm({ name: '', phone: '' }); }} className="px-4 py-2 bg-gray-200 rounded-lg hover:bg-gray-300">İptal</button>}
-                                    <button type="submit" className="flex-1 bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700">{editingUser ? 'Güncelle' : 'Kullanıcı Ekle'}</button>
-                                </div>
-                            </form>
-                            <div className="space-y-2">
-                                {users.map(user => (
-                                    <div key={user.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl group">
-                                        <div className="flex items-center gap-3">
-                                            <img src={user.avatar} className="w-8 h-8 rounded-full" alt="" />
-                                            <div>
-                                                <p className="font-medium">{user.name}</p>
-                                                <p className="text-xs text-gray-500">{user.phone || 'Tel yok'}</p>
-                                            </div>
-                                        </div>
-                                        <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                            <button onClick={() => handleEditUserClick(user)} className="p-1 text-blue-500 hover:bg-blue-100 rounded"><Edit2 size={16} /></button>
-                                            <button onClick={() => handleDeleteUser(user.id)} className="p-1 text-red-500 hover:bg-red-100 rounded"><Trash2 size={16} /></button>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-
-                        {/* Category Management */}
-                        <div className="bg-white p-6 rounded-2xl shadow-sm">
-                            <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><Settings size={20} /> Kategori Yönetimi</h2>
-                            <form onSubmit={handleSaveCategory} className="mb-6 space-y-3 bg-gray-50 p-4 rounded-xl">
-                                <div className="flex gap-2">
-                                    <select value={categoryForm.type} onChange={e => setCategoryForm({ ...categoryForm, type: e.target.value })} className="p-2 border rounded-lg">
-                                        <option value="income">Gelir</option>
-                                        <option value="expense">Gider</option>
-                                    </select>
-                                    <input type="text" placeholder="Kategori Adı" value={categoryForm.name} onChange={e => setCategoryForm({ ...categoryForm, name: e.target.value })} className="flex-1 p-2 border rounded-lg" required />
-                                </div>
-                                <div className="flex gap-2">
-                                    {editingCategory && <button type="button" onClick={() => { setEditingCategory(null); setCategoryForm({ name: '', type: 'expense' }); }} className="px-4 py-2 bg-gray-200 rounded-lg hover:bg-gray-300">İptal</button>}
-                                    <button type="submit" className="flex-1 bg-green-600 text-white py-2 rounded-lg hover:bg-green-700">{editingCategory ? 'Güncelle' : 'Kategori Ekle'}</button>
-                                </div>
-                            </form>
-
-                            <div className="grid grid-cols-2 gap-4">
-                                <div>
-                                    <h3 className="font-medium text-green-600 mb-2">Gelir Kategorileri</h3>
-                                    <div className="space-y-2">
-                                        {categories.income.map(cat => (
-                                            <div key={cat.id} className="flex justify-between items-center p-2 bg-green-50 rounded-lg text-sm group">
-                                                <span>{cat.name}</span>
-                                                <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                    <button onClick={() => handleEditCategoryClick(cat, 'income')} className="text-blue-400 hover:text-blue-600"><Edit2 size={14} /></button>
-                                                    <button onClick={() => handleDeleteCategory('income', cat.id)} className="text-red-400 hover:text-red-600"><Trash2 size={14} /></button>
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                                <div>
-                                    <h3 className="font-medium text-red-600 mb-2">Gider Kategorileri</h3>
-                                    <div className="space-y-2">
-                                        {categories.expense.map(cat => (
-                                            <div key={cat.id} className="flex justify-between items-center p-2 bg-red-50 rounded-lg text-sm group">
-                                                <span>{cat.name}</span>
-                                                <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                    <button onClick={() => handleEditCategoryClick(cat, 'expense')} className="text-blue-400 hover:text-blue-600"><Edit2 size={14} /></button>
-                                                    <button onClick={() => handleDeleteCategory('expense', cat.id)} className="text-red-400 hover:text-red-600"><Trash2 size={14} /></button>
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+                    renderSettings()
                 )}
             </div>
         </div>
